@@ -205,6 +205,7 @@
   <div class="sport-tabs">
     <button class="sport-btn active" data-sport="baseball_mlb">MLB</button>
     <button class="sport-btn" data-sport="americanfootball_nfl">NFL</button>
+    <button class="sport-btn" data-sport="americanfootball_nfl_preseason">NFL (Pre)</button>
     <button class="sport-btn" data-sport="americanfootball_ncaaf">College FB</button>
     <button class="sport-btn" data-sport="basketball_nba">NBA</button>
     <button class="sport-btn" data-sport="basketball_ncaab">College BB</button>
@@ -268,8 +269,8 @@ function showPage(page) {
   if (page === "tracker") renderTracker();
 }
 
-const QUARTERS_SUPPORTED = ["americanfootball_nfl", "americanfootball_ncaaf", "basketball_nba"];
-const PROPS_SUPPORTED = ["americanfootball_nfl"];
+const QUARTERS_SUPPORTED = ["americanfootball_nfl", "americanfootball_nfl_preseason", "americanfootball_ncaaf", "basketball_nba"];
+const PROPS_SUPPORTED = ["americanfootball_nfl", "americanfootball_nfl_preseason"];
 
 function getSpreadLabel(sport) {
   if (sport === "baseball_mlb") return "Run Line";
