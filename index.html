@@ -213,7 +213,17 @@
   <div class="market-tabs">
     <label class="market-btn active" id="m-h2h"><input type="checkbox" checked disabled> Moneyline</label>
     <label class="market-btn" id="m-totals"><input type="checkbox" id="cb-totals"> Game Total</label>
-    <label class="market-btn" id="m-spreads"><input type="checkbox" id="cb-spreads"> Run Line</label>
+    <label class="market-btn" id="m-spreads"><input type="checkbox" id="cb-spreads"> <span id="spread-label-text">Run Line</span></label>
+  </div>
+
+  <div class="market-tabs" id="period-row" style="display:none">
+    <label class="market-btn" id="m-1h"><input type="checkbox" id="cb-1h"> 1st Half</label>
+    <label class="market-btn" id="m-2h"><input type="checkbox" id="cb-2h"> 2nd Half</label>
+    <label class="market-btn" id="m-quarters"><input type="checkbox" id="cb-quarters"> Quarters</label>
+  </div>
+
+  <div class="market-tabs" id="props-row" style="display:none">
+    <label class="market-btn" id="m-props"><input type="checkbox" id="cb-props"> 🏈 Player Props</label>
   </div>
 
   <button class="run-btn" id="run-btn" onclick="runModel()">Run Model</button>
@@ -221,9 +231,10 @@
   <div id="results"></div>
 
   <div class="footer">
-    Edge = DraftKings sharp line vs best available price<br>
+    Edge = sharp book line (DraftKings, or best available) vs best available price<br>
     Vegas slots require 5%+ edge. Public slots require 3%+.<br><br>
     <b style="color:#4FC3F7">New:</b> Enter Action Network bet% / money% on any card to auto-confirm sharp money and adjust the rating.<br><br>
+    <b style="color:#4FC3F7">Player Props (NFL):</b> pulls props per game individually — uses one extra API call per game on the slate, so it costs more of your API quota. Use when you actually want to dig into a slate, not on every run.<br><br>
     Note: First-5-innings and team-total markets are not in this data feed.
   </div>
 </div>
@@ -257,6 +268,29 @@ function showPage(page) {
   if (page === "tracker") renderTracker();
 }
 
+const QUARTERS_SUPPORTED = ["americanfootball_nfl", "americanfootball_ncaaf", "basketball_nba"];
+const PROPS_SUPPORTED = ["americanfootball_nfl"];
+
+function getSpreadLabel(sport) {
+  if (sport === "baseball_mlb") return "Run Line";
+  return "Spread";
+}
+
+function updateSportUI() {
+  document.getElementById("spread-label-text").textContent = getSpreadLabel(activeSport);
+
+  const periodRow = document.getElementById("period-row");
+  const quartersBtn = document.getElementById("m-quarters");
+  const propsRow = document.getElementById("props-row");
+
+  periodRow.style.display = activeSport === "baseball_mlb" ? "none" : "flex";
+  quartersBtn.style.display = QUARTERS_SUPPORTED.includes(activeSport) ? "flex" : "none";
+  if (!QUARTERS_SUPPORTED.includes(activeSport)) document.getElementById("cb-quarters").checked = false;
+
+  propsRow.style.display = PROPS_SUPPORTED.includes(activeSport) ? "flex" : "none";
+  if (!PROPS_SUPPORTED.includes(activeSport)) document.getElementById("cb-props").checked = false;
+}
+
 document.querySelectorAll(".sport-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".sport-btn").forEach(b => b.classList.remove("active"));
@@ -264,8 +298,10 @@ document.querySelectorAll(".sport-btn").forEach(btn => {
     activeSport = btn.dataset.sport;
     document.getElementById("results").innerHTML = "";
     showStatus("", "");
+    updateSportUI();
   });
 });
+updateSportUI();
 
 document.getElementById("cb-totals").addEventListener("change", e => {
   document.getElementById("m-totals").classList.toggle("active", e.target.checked);
@@ -343,7 +379,10 @@ function getSlotInfo(commenceTime, sport) {
 function processMarket(game, marketKey, marketLabel, slotInfo) {
   const results = [];
   const books = game.bookmakers || [];
-  const sharp = books.find(b => b.key === "draftkings");
+  // Prefer DraftKings as the sharp reference, but fall back to whichever book
+  // actually has this market posted (DK is often slow on preseason/early lines).
+  let sharp = books.find(b => b.key === "draftkings" && b.markets?.some(m => m.key === marketKey));
+  if (!sharp) sharp = books.find(b => b.markets?.some(m => m.key === marketKey));
   if (!sharp) return results;
   const market = sharp.markets?.find(m => m.key === marketKey);
   if (!market) return results;
@@ -351,11 +390,11 @@ function processMarket(game, marketKey, marketLabel, slotInfo) {
   for (const outcome of market.outcomes) {
     const sharpOdds = outcome.price;
     let bestOdds = sharpOdds;
-    let bestBook = "DraftKings";
+    let bestBook = sharp.title;
     let pointLabel = outcome.point !== undefined ? ` ${outcome.point > 0 ? "+" : ""}${outcome.point}` : "";
 
     for (const book of books) {
-      if (book.key === "draftkings") continue;
+      if (book.key === sharp.key) continue;
       const bm = book.markets?.find(m => m.key === marketKey);
       if (!bm) continue;
       const match = bm.outcomes?.find(o => o.name === outcome.name && o.point === outcome.point);
@@ -394,6 +433,109 @@ function processGames(data, sport, marketsToCheck) {
     }
   }
   return results.sort((a, b) => b.edge - a.edge);
+}
+
+const NFL_PROP_MARKETS = [
+  ["player_pass_yds", "Pass Yards"],
+  ["player_pass_tds", "Pass TDs"],
+  ["player_pass_interceptions", "Pass INTs"],
+  ["player_rush_yds", "Rush Yards"],
+  ["player_receptions", "Receptions"],
+  ["player_reception_yds", "Rec Yards"],
+  ["player_anytime_td", "Anytime TD"],
+];
+
+function periodSuffix(period) { return period === "full" ? "" : "_" + period; }
+function periodLabel(period) {
+  const map = { full: "", h1: "1H", h2: "2H", q1: "Q1", q2: "Q2", q3: "Q3", q4: "Q4" };
+  return map[period];
+}
+
+function buildMarketsToCheck() {
+  const base = [["h2h", "Moneyline"]];
+  if (document.getElementById("cb-totals").checked) base.push(["totals", "Game Total"]);
+  if (document.getElementById("cb-spreads").checked) base.push(["spreads", getSpreadLabel(activeSport)]);
+
+  const periods = ["full"];
+  if (activeSport !== "baseball_mlb") {
+    if (document.getElementById("cb-1h").checked) periods.push("h1");
+    if (document.getElementById("cb-2h").checked) periods.push("h2");
+    if (document.getElementById("cb-quarters").checked && QUARTERS_SUPPORTED.includes(activeSport)) {
+      periods.push("q1", "q2", "q3", "q4");
+    }
+  }
+
+  const marketsToCheck = [];
+  for (const period of periods) {
+    const suffix = periodSuffix(period);
+    const pLabel = periodLabel(period);
+    for (const [key, name] of base) {
+      marketsToCheck.push([key + suffix, pLabel ? `${name} (${pLabel})` : name]);
+    }
+  }
+  return marketsToCheck;
+}
+
+function processPlayerProps(game, propsResponse, slotInfo) {
+  const results = [];
+  const books = propsResponse.bookmakers || [];
+  if (!books.length) return results;
+
+  for (const [marketKey, marketLabel] of NFL_PROP_MARKETS) {
+    let sharp = books.find(b => b.key === "draftkings" && b.markets?.some(m => m.key === marketKey));
+    if (!sharp) sharp = books.find(b => b.markets?.some(m => m.key === marketKey));
+    if (!sharp) continue;
+    const market = sharp.markets.find(m => m.key === marketKey);
+    if (!market) continue;
+
+    for (const outcome of market.outcomes) {
+      const sharpOdds = outcome.price;
+      let bestOdds = sharpOdds;
+      let bestBook = sharp.title;
+      const pointLabel = outcome.point !== undefined ? ` ${outcome.point}` : "";
+      const playerName = outcome.description || outcome.name;
+
+      for (const book of books) {
+        if (book.key === sharp.key) continue;
+        const bm = book.markets?.find(m => m.key === marketKey);
+        if (!bm) continue;
+        const match = bm.outcomes?.find(o =>
+          o.description === outcome.description && o.name === outcome.name && o.point === outcome.point
+        );
+        if (match && match.price > bestOdds) { bestOdds = match.price; bestBook = book.title; }
+      }
+
+      const edge = calcEdge(bestOdds, sharpOdds);
+      const rating = getRating(edge, slotInfo.isVegas);
+      if (rating) {
+        results.push({
+          id: game.id + "-" + marketKey + "-" + playerName + "-" + outcome.name + "-" + (outcome.point || ""),
+          sport: game.sport_title,
+          game: game.away_team + " @ " + game.home_team,
+          pick: `${playerName}: ${outcome.name}${pointLabel} ${marketLabel}`,
+          marketLabel: "Prop · " + marketLabel,
+          sharpOdds, bestOdds, bestBook, edge, rating, slotInfo,
+          time: new Date(game.commence_time).toLocaleTimeString("en-US", {
+            hour: "numeric", minute: "2-digit", timeZoneName: "short"
+          })
+        });
+      }
+    }
+  }
+  return results;
+}
+
+async function fetchPropsForGame(game, slotInfo) {
+  const marketKeys = NFL_PROP_MARKETS.map(m => m[0]).join(",");
+  const url = `https://api.the-odds-api.com/v4/sports/${activeSport}/events/${game.id}/odds/?apiKey=${API_KEY}&regions=us&markets=${marketKeys}&oddsFormat=american&bookmakers=draftkings,fanduel,betmgm,bovada,betonlineag,mybookieag`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return processPlayerProps(game, data, slotInfo);
+  } catch (e) {
+    return [];
+  }
 }
 
 function renderPlays(plays) {
@@ -602,10 +744,7 @@ async function runModel() {
   showStatus("", "");
   document.getElementById("results").innerHTML = "";
 
-  const marketsToCheck = [["h2h", "Moneyline"]];
-  if (document.getElementById("cb-totals").checked) marketsToCheck.push(["totals", "Game Total"]);
-  if (document.getElementById("cb-spreads").checked) marketsToCheck.push(["spreads", "Run Line"]);
-
+  const marketsToCheck = buildMarketsToCheck();
   const marketKeys = marketsToCheck.map(m => m[0]).join(",");
   const url = `https://api.the-odds-api.com/v4/sports/${activeSport}/odds/?apiKey=${API_KEY}&regions=us&markets=${marketKeys}&oddsFormat=american&bookmakers=draftkings,fanduel,betmgm,bovada,betonlineag,mybookieag`;
 
@@ -613,19 +752,38 @@ async function runModel() {
     const res = await fetch(url);
     if (!res.ok) {
       if (res.status === 401) throw new Error("API key issue.");
-      if (res.status === 422) throw new Error("No games available for this sport right now.");
+      if (res.status === 422) throw new Error("No games available for this sport/market combo right now.");
       throw new Error("API error " + res.status);
     }
     const data = await res.json();
     if (!data.length) {
       showStatus("No games on the slate for this sport right now.", "info");
+      return;
+    }
+
+    let plays = processGames(data, activeSport, marketsToCheck);
+
+    const propsWanted = PROPS_SUPPORTED.includes(activeSport) && document.getElementById("cb-props").checked;
+    if (propsWanted) {
+      for (let i = 0; i < data.length; i++) {
+        const game = data[i];
+        btn.innerHTML = `<span class="spinner"></span>Fetching props (${i + 1}/${data.length})...`;
+        const slotInfo = getSlotInfo(game.commence_time, activeSport);
+        const propPlays = await fetchPropsForGame(game, slotInfo);
+        plays = plays.concat(propPlays);
+      }
+      plays = plays.sort((a, b) => b.edge - a.edge);
+    }
+
+    if (!plays.length) {
+      showStatus("Games found, but nothing cleared the edge threshold right now. Check back closer to kickoff.", "info");
     } else {
-      const plays = processGames(data, activeSport, marketsToCheck);
       renderPlays(plays);
     }
   } catch (e) {
-    if (e.message.includes("fetch") || e.message.includes("Network")) {
-      showStatus("Network blocked in this environment. Open the app directly at your GitHub Pages link.", "error");
+    const msg = (e.message || "").toLowerCase();
+    if (msg.includes("fetch") || msg.includes("network") || msg.includes("load failed")) {
+      showStatus("This preview can't reach the odds API directly. Push to GitHub and open your live GitHub Pages link to run it.", "error");
     } else {
       showStatus(e.message, "error");
     }
