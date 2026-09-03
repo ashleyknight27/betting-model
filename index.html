@@ -752,9 +752,25 @@ async function runModel() {
   try {
     const res = await fetch(url);
     if (!res.ok) {
-      if (res.status === 401) throw new Error("API key issue.");
-      if (res.status === 422) throw new Error("No games available for this sport/market combo right now.");
-      throw new Error("API error " + res.status);
+      let apiDetail = "";
+      try {
+        const errBody = await res.json();
+        apiDetail = errBody.message || errBody.error_code || JSON.stringify(errBody);
+      } catch (parseErr) {
+        apiDetail = await res.text().catch(() => "");
+      }
+
+      if (res.status === 401) {
+        throw new Error("API key issue." + (apiDetail ? " Details: " + apiDetail : ""));
+      }
+      if (res.status === 422) {
+        throw new Error(
+          "The odds API rejected this request (422)." +
+          (apiDetail ? " Reason: " + apiDetail : " No reason returned by the API.") +
+          " Markets requested: " + marketKeys
+        );
+      }
+      throw new Error("API error " + res.status + (apiDetail ? ": " + apiDetail : ""));
     }
     const data = await res.json();
     if (!data.length) {
@@ -796,4 +812,3 @@ async function runModel() {
 </script>
 </body>
 </html>
-
