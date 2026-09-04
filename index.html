@@ -452,29 +452,53 @@ function periodLabel(period) {
   return map[period];
 }
 
-function buildMarketsToCheck() {
+function buildMarketGroups() {
   const base = [["h2h", "Moneyline"]];
   if (document.getElementById("cb-totals").checked) base.push(["totals", "Game Total"]);
   if (document.getElementById("cb-spreads").checked) base.push(["spreads", getSpreadLabel(activeSport)]);
 
-  const periods = ["full"];
+  // Full-game markets go through the bulk /odds/ endpoint.
+  const full = base.map(([key, name]) => [key, name]);
+
+  // Period markets (1H/2H/quarters) are NOT supported by the bulk endpoint —
+  // The Odds API only serves them per-event via /events/{id}/odds/.
+  const periodKeysWanted = [];
   if (activeSport !== "baseball_mlb") {
-    if (document.getElementById("cb-1h").checked) periods.push("h1");
-    if (document.getElementById("cb-2h").checked) periods.push("h2");
+    if (document.getElementById("cb-1h").checked) periodKeysWanted.push("h1");
+    if (document.getElementById("cb-2h").checked) periodKeysWanted.push("h2");
     if (document.getElementById("cb-quarters").checked && QUARTERS_SUPPORTED.includes(activeSport)) {
-      periods.push("q1", "q2", "q3", "q4");
+      periodKeysWanted.push("q1", "q2", "q3", "q4");
     }
   }
 
-  const marketsToCheck = [];
-  for (const period of periods) {
-    const suffix = periodSuffix(period);
-    const pLabel = periodLabel(period);
+  const period = [];
+  for (const p of periodKeysWanted) {
+    const suffix = periodSuffix(p);
+    const pLabel = periodLabel(p);
     for (const [key, name] of base) {
-      marketsToCheck.push([key + suffix, pLabel ? `${name} (${pLabel})` : name]);
+      period.push([key + suffix, `${name} (${pLabel})`]);
     }
   }
-  return marketsToCheck;
+
+  return { full, period };
+}
+
+async function fetchPeriodMarketsForGame(game, periodMarketsToCheck, slotInfo) {
+  if (!periodMarketsToCheck.length) return [];
+  const marketKeys = periodMarketsToCheck.map(m => m[0]).join(",");
+  const url = `https://api.the-odds-api.com/v4/sports/${activeSport}/events/${game.id}/odds/?apiKey=${API_KEY}&regions=us&markets=${marketKeys}&oddsFormat=american&bookmakers=draftkings,fanduel,betmgm,bovada,betonlineag,mybookieag`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const eventData = await res.json();
+    let results = [];
+    for (const [key, label] of periodMarketsToCheck) {
+      results = results.concat(processMarket(eventData, key, label, slotInfo));
+    }
+    return results;
+  } catch (e) {
+    return [];
+  }
 }
 
 function processPlayerProps(game, propsResponse, slotInfo) {
@@ -745,8 +769,8 @@ async function runModel() {
   showStatus("", "");
   document.getElementById("results").innerHTML = "";
 
-  const marketsToCheck = buildMarketsToCheck();
-  const marketKeys = marketsToCheck.map(m => m[0]).join(",");
+  const { full: fullMarkets, period: periodMarkets } = buildMarketGroups();
+  const marketKeys = fullMarkets.map(m => m[0]).join(",");
   const url = `https://api.the-odds-api.com/v4/sports/${activeSport}/odds/?apiKey=${API_KEY}&regions=us&markets=${marketKeys}&oddsFormat=american&bookmakers=draftkings,fanduel,betmgm,bovada,betonlineag,mybookieag`;
 
   try {
@@ -778,7 +802,17 @@ async function runModel() {
       return;
     }
 
-    let plays = processGames(data, activeSport, marketsToCheck);
+    let plays = processGames(data, activeSport, fullMarkets);
+
+    if (periodMarkets.length) {
+      for (let i = 0; i < data.length; i++) {
+        const game = data[i];
+        btn.innerHTML = `<span class="spinner"></span>Fetching period odds (${i + 1}/${data.length})...`;
+        const slotInfo = getSlotInfo(game.commence_time, activeSport);
+        const periodPlays = await fetchPeriodMarketsForGame(game, periodMarkets, slotInfo);
+        plays = plays.concat(periodPlays);
+      }
+    }
 
     const propsWanted = PROPS_SUPPORTED.includes(activeSport) && document.getElementById("cb-props").checked;
     if (propsWanted) {
@@ -789,8 +823,9 @@ async function runModel() {
         const propPlays = await fetchPropsForGame(game, slotInfo);
         plays = plays.concat(propPlays);
       }
-      plays = plays.sort((a, b) => b.edge - a.edge);
     }
+
+    plays = plays.sort((a, b) => b.edge - a.edge);
 
     if (!plays.length) {
       showStatus("Games found, but nothing cleared the edge threshold right now. Check back closer to kickoff.", "info");
